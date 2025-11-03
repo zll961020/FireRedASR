@@ -72,6 +72,7 @@ class FireRedAsrLlm(nn.Module):
         # Build LLM
         llm = AutoModelForCausalLM.from_pretrained(
             args.llm_dir,
+            device_map="auto",
             attn_implementation=attn_implementation,
             torch_dtype=torch_dtype,
         )
