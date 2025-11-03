@@ -54,8 +54,16 @@ class FireRedAsr:
         # np.save(feat_lengths_npy, lengths.cpu().numpy())
         total_dur = sum(durs)
         if args.get("use_gpu", False):
-            feats, lengths = feats.cuda(), lengths.cuda()
-            self.model.cuda()
+            if self.asr_type == "llm":
+                # For LLM: model already distributed by device_map="auto"
+                # Only move encoder/projector and input data
+                self.model.encoder.cuda()
+                self.model.encoder_projector.cuda()
+                feats, lengths = feats.cuda(), lengths.cuda()
+            else:
+                # For AED: move entire model to GPU
+                feats, lengths = feats.cuda(), lengths.cuda()
+                self.model.cuda()
         else:
             self.model.cpu()
 
