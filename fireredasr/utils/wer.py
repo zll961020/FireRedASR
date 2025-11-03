@@ -46,10 +46,10 @@ def read_uttid2text(filename, do_tn=False, rm_special=False):
                 continue
             txt = " ".join(cols[1:])
             if rm_special:
-                txt = " ".join([t for t in re.split("<\|.*?\|>", txt) if t.strip() != ""])
+                txt = " ".join([t for t in re.split("<\|.*?\|>", txt) if t.strip() != ""]) # 移除 <|xxx|> 格式的特殊标记
             if do_tn:
                 import cn2an
-                txt = cn2an.transform(txt, "an2cn")
+                txt = cn2an.transform(txt, "an2cn") # 文本标准化 
             uttid2text[cols[0]] = txt
     return uttid2text
 
@@ -60,43 +60,84 @@ def text2tokens(text):
         return []
     tokens = []
 
-    text = re.sub("<unk>", "", text)
-    text = re.sub(r"[%s]+" % PUNCTUATIONS, " ", text)
+    text = re.sub("<unk>", "", text) # 移除<unk> 
+    text = re.sub(r"[%s]+" % PUNCTUATIONS, " ", text) # 标点符号转成空格  
 
-    pattern = re.compile(r'([\u4e00-\u9fff])')
+    pattern = re.compile(r'([\u4e00-\u9fff])') # 匹配中文字符 
     parts = pattern.split(text.strip().upper())
     parts = [p for p in parts if len(p.strip()) > 0]
     for part in parts:
         if pattern.fullmatch(part) is not None:
-            tokens.append(part)
+            tokens.append(part) # 中文字符直接作为token 
         else:
             for word in part.strip().split():
-                tokens.append(word)
+                tokens.append(word) # 英文部分按照空格分隔 
     return tokens
 
 
 def compute_uttid2wer_info(refs, hyps, print_sentence_wer=False):
+    """
+    计算每个utterance的WER信息并汇总统计结果
+
+    Args:
+        refs (OrderedDict): 参考文本的utterance ID到token列表的映射
+                   格式: {uttid: ["token1", "token2", ...]}
+        hyps (OrderedDict): 假设文本的utterance ID到token列表的映射
+                   格式: {uttid: ["token1", "token2", ...]}
+        print_sentence_wer (bool): 是否打印每个句子的WER详情，默认False
+
+    Returns:
+        tuple: (uttid2wer_info, wer_stat, en_dig_stat)
+            - uttid2wer_info: 每个utterance的WER详细信息
+            - wer_stat: 整体WER统计信息
+            - en_dig_stat: 英文单词和数字的识别统计信息
+    """
     print(f">>> Compute uttid to wer info", flush=True)
 
+    # 存储每个utterance的WER详细信息
     uttid2wer_info = OrderedDict()
+
+    # 创建WER统计对象，用于计算整体指标
     wer_stat = WerStats()
+
+    # 创建英文和数字统计对象，用于专项分析
     en_dig_stat = EnDigStats()
 
+    # 遍历所有参考文本的utterance
     for uttid, ref in refs.items():
+        # 检查假设文本中是否存在对应的utterance
         if uttid not in hyps:
             print(f"[WARN] No hyp for {uttid}", flush=True)
             continue
+
+        # 获取对应的假设文本token列表
         hyp = hyps[uttid]
 
+        # 长度过滤检查：如果假设文本比参考文本长8个token以上，发出警告
+        # 这可能是识别错误或文本不匹配的标志
         if len(hyp) - len(ref) >= 8:
             print(f"[BidLengthDiff]: {uttid} {len(ref)} {len(hyp)}#{' '.join(ref)}#{' '.join(hyp)}")
+            # 当前注释掉，不排除这些样本参与WER计算
             #continue
 
+        # 计算单个utterance的WER信息（使用动态规划算法）
         wer_info = compute_one_wer_info(ref, hyp)
+
+        # 存储该utterance的WER详细信息
         uttid2wer_info[uttid] = wer_info
+
+        # 计算英文单词和数字的识别情况（包含错误单词详情）
         ns = count_english_ditgit(ref, hyp, wer_info)
+        n_en_word, n_en_correct, n_dig_word, n_dig_correct, wrong_en_words, wrong_dig_words = ns
+
+        # 累加到整体WER统计中
         wer_stat.add(wer_info)
-        en_dig_stat.add(*ns)
+
+        # 累加到英文和数字专项统计中（包含错误单词和utterance ID）
+        en_dig_stat.add(n_en_word, n_en_correct, n_dig_word, n_dig_correct,
+                        wrong_en_words, wrong_dig_words, uttid)
+
+        # 如果启用详细输出，打印每个utterance的WER信息
         if print_sentence_wer:
             print(f"{uttid} {wer_info}")
 
@@ -252,16 +293,41 @@ class EnDigStats:
         self.n_en_correct = 0
         self.n_dig_word = 0
         self.n_dig_correct = 0
+        # 新增：记录错误的英文和数字单词
+        self.wrong_en_words = []  # 格式: [(uttid, ref_word, hyp_word), ...]
+        self.wrong_dig_words = []  # 格式: [(uttid, ref_word, hyp_word), ...]
 
-    def add(self, n_en_word, n_en_correct, n_dig_word, n_dig_correct):
+    def add(self, n_en_word, n_en_correct, n_dig_word, n_dig_correct,
+            wrong_en_words=None, wrong_dig_words=None, uttid=None):
         self.n_en_word += n_en_word
         self.n_en_correct += n_en_correct
         self.n_dig_word += n_dig_word
         self.n_dig_correct += n_dig_correct
 
+        # 记录错误单词
+        if wrong_en_words:
+            for word, hyp_word in wrong_en_words:
+                self.wrong_en_words.append((uttid, word, hyp_word))
+        if wrong_dig_words:
+            for word, hyp_word in wrong_dig_words:
+                self.wrong_dig_words.append((uttid, word, hyp_word))
+
     def print(self):
-        print(f"English #word={self.n_en_word}, #correct={self.n_en_correct}\n"
-              f"Digit #word={self.n_dig_word}, #correct={self.n_dig_correct}")
+        print(f"English #word={self.n_en_word}, #correct={self.n_en_correct}")
+        print(f"Digit #word={self.n_dig_word}, #correct={self.n_dig_correct}")
+
+        # 输出错误的英文单词详情
+        if self.wrong_en_words:
+            print("\nWrong English words:")
+            for uttid, ref_word, hyp_word in self.wrong_en_words:
+                print(f"  {uttid}: '{ref_word}' -> '{hyp_word}'")
+
+        # 输出错误的数字详情
+        if self.wrong_dig_words:
+            print("\nWrong Digit words:")
+            for uttid, ref_word, hyp_word in self.wrong_dig_words:
+                print(f"  {uttid}: '{ref_word}' -> '{hyp_word}'")
+
         print("-"*80)
 
 
@@ -274,26 +340,59 @@ def count_english_ditgit(ref, hyp, wer_info):
     n_en_correct = 0
     n_dig_word = 0
     n_dig_correct = 0
+
+    # 记录错误的单词
+    wrong_en_words = []
+    wrong_dig_words = []
+
     ali = wer_info.ali
+
+    # 创建对齐映射
+    alignment_map = {}
+    for y in ali:
+        if y[2] == ALIGN_CRT:  # 正确对齐
+            ref_idx = y[0] - 1
+            hyp_idx = y[1] - 1
+            alignment_map[ref_idx] = hyp_idx
+
     for i, token in enumerate(ref):
         if re.match(patt_en, token):
             n_en_word += 1
-            for y in ali:
-                if y[0] == i+1 and y[2] == ALIGN_CRT:
-                    j = y[1] - 1
+            if i in alignment_map:
+                hyp_idx = alignment_map[i]
+                if hyp_idx < len(hyp):
                     n_en_correct += 1
-                    break
-        if re.match(patt_dig, token):
+                else:
+                    # 删除错误
+                    wrong_en_words.append((token, "<deleted>"))
+            else:
+                # 替换或删除错误
+                if i < len(hyp):
+                    hyp_word = hyp[i]  # 这可能不准确，但作为简化处理
+                    wrong_en_words.append((token, hyp_word))
+                else:
+                    wrong_en_words.append((token, "<deleted>"))
+
+        elif re.match(patt_dig, token):
             n_dig_word += 1
-            for y in ali:
-                if y[0] == i+1 and y[2] == ALIGN_CRT:
-                    j = y[1] - 1
+            if i in alignment_map:
+                hyp_idx = alignment_map[i]
+                if hyp_idx < len(hyp):
                     n_dig_correct += 1
-                    break
-        if not re.match(patt_cjk, token) and not re.match(patt_en, token) \
+                else:
+                    wrong_dig_words.append((token, "<deleted>"))
+            else:
+                if i < len(hyp):
+                    hyp_word = hyp[i]
+                    wrong_dig_words.append((token, hyp_word))
+                else:
+                    wrong_dig_words.append((token, "<deleted>"))
+
+        elif not re.match(patt_cjk, token) and not re.match(patt_en, token) \
            and not re.match(patt_dig, token):
             print("[WiredChar]:", token)
-    return n_en_word, n_en_correct, n_dig_word, n_dig_correct
+
+    return n_en_word, n_en_correct, n_dig_word, n_dig_correct, wrong_en_words, wrong_dig_words
 
 
 

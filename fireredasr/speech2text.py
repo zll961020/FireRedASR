@@ -4,7 +4,13 @@ import argparse
 import glob
 import os
 import sys
-
+import logging
+# 在导入 FunASR 之前设置日志配置
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    force=True  # 强制重新配置，覆盖后续的配置
+)
 from fireredasr.models.fireredasr import FireRedAsr
 
 
@@ -65,7 +71,8 @@ def main(args):
             "decode_min_len": args.decode_min_len,
             "repetition_penalty": args.repetition_penalty,
             "llm_length_penalty": args.llm_length_penalty,
-            "temperature": args.temperature
+            "temperature": args.temperature,
+            'output': "/data/zhanglingling/AI/asr/FunASR/tests"
             }
         )
 

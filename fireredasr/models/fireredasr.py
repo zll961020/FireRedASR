@@ -1,5 +1,6 @@
 import os
 import time
+import argparse
 
 import torch
 
@@ -8,7 +9,9 @@ from fireredasr.models.fireredasr_aed import FireRedAsrAed
 from fireredasr.models.fireredasr_llm import FireRedAsrLlm
 from fireredasr.tokenizer.aed_tokenizer import ChineseCharEnglishSpmTokenizer
 from fireredasr.tokenizer.llm_tokenizer import LlmTokenizerWrapper
-
+import yaml 
+import logging 
+import numpy as np  
 
 class FireRedAsr:
     @classmethod
@@ -42,6 +45,13 @@ class FireRedAsr:
     @torch.no_grad()
     def transcribe(self, batch_uttid, batch_wav_path, args={}):
         feats, lengths, durs = self.feat_extractor(batch_wav_path)
+        logging.info(f'feats: {feats.shape}, lengths: {lengths}, length dtype: {lengths.dtype} durs: {durs}')
+        logging.info(f'output: {args.get("output","")} dir: {os.path.dirname(args.get("output",""))}')
+        # save feat to npy for debug
+        # feat_npy = os.path.join(args.get("output","/tmp"), f"{batch_uttid[0]}_feat_fireredasr.npy")
+        # np.save(feat_npy, feats.cpu().numpy())
+        # feat_lengths_npy = os.path.join(args.get("output","/tmp"), f"{batch_uttid[0]}_feat_lengths_fireredasr.npy")
+        # np.save(feat_lengths_npy, lengths.cpu().numpy())
         total_dur = sum(durs)
         if args.get("use_gpu", False):
             feats, lengths = feats.cuda(), lengths.cuda()
@@ -83,7 +93,11 @@ class FireRedAsr:
                 input_ids = input_ids.cuda()
                 attention_mask = attention_mask.cuda()
             start_time = time.time()
-
+            logging.info(f'input_ids: {input_ids.shape}, attention_mask: {attention_mask.shape}')
+            # padding_input_ids = os.path.join(args.get("output","/tmp"), f"{batch_uttid[0]}_input_ids_fireredasr.npy")
+            # np.save(padding_input_ids, input_ids.cpu().numpy())
+            # attention_mask_file = os.path.join(args.get("output","/tmp"), f"{batch_uttid[0]}_attention_mask_fireredasr.npy")
+            # np.save(attention_mask_file, attention_mask.cpu().numpy())
             generated_ids = self.model.transcribe(
                 feats, lengths, input_ids, attention_mask,
                 args.get("beam_size", 1),
@@ -107,6 +121,8 @@ class FireRedAsr:
 
 
 def load_fireredasr_aed_model(model_path):
+    # Add safe globals for PyTorch 2.6+ compatibility
+    torch.serialization.add_safe_globals([argparse.Namespace])
     package = torch.load(model_path, map_location=lambda storage, loc: storage)
     print("model args:", package["args"])
     model = FireRedAsrAed.from_args(package["args"])
@@ -115,11 +131,18 @@ def load_fireredasr_aed_model(model_path):
 
 
 def load_firered_llm_model_and_tokenizer(model_path, encoder_path, llm_dir):
+    # Add safe globals for PyTorch 2.6+ compatibility
+    torch.serialization.add_safe_globals([argparse.Namespace])
     package = torch.load(model_path, map_location=lambda storage, loc: storage)
     package["args"].encoder_path = encoder_path
     package["args"].llm_dir = llm_dir
+    if not os.path.exists(os.path.join(os.path.dirname(model_path), "fireredasrllm_config.yaml")):
+        config_path = os.path.join(os.path.dirname(model_path), "fireredasrllm_config.yaml")
+        with open(config_path, 'w', encoding='utf-8') as f:
+            yaml.dump(package["args"], f, default_flow_style=False, allow_unicode=True)
     print("model args:", package["args"])
     model = FireRedAsrLlm.from_args(package["args"])
+    #logging.info(f'fireredasr llm model path: {model_path}, package: {package}')
     model.load_state_dict(package["model_state_dict"], strict=False)
     tokenizer = LlmTokenizerWrapper.build_llm_tokenizer(llm_dir)
     return model, tokenizer
